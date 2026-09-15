@@ -30,10 +30,14 @@ export default function App() {
   // AI Copilot Chat State
   const [isCopilotOpen, setIsCopilotOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState([
-    { role: 'assistant', content: '👋 Hi! I am Nexus AI Copilot powered by NVIDIA Llama 3.2. Ask me anything about your project architecture, code, or tasks!' }
+    { role: 'assistant', content: '👋 Hi! I am Nexus AI Copilot powered by NVIDIA NIM. Ask me anything about your project architecture, code, or tasks!' }
   ]);
   const [userChatInput, setUserChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
+
+  // AI Model State
+  const [availableModels, setAvailableModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState('meta/llama-3.2-11b-vision-instruct');
 
   const showToast = (message) => {
     setToast(message);
@@ -71,9 +75,27 @@ export default function App() {
     }
   };
 
+  // Fetch AI Models
+  const fetchModels = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/ai/models`);
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.success && json.models) {
+        setAvailableModels(json.models);
+        if (json.defaultModel) {
+          setSelectedModel(json.defaultModel);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching AI models:', err);
+    }
+  };
+
   useEffect(() => {
     checkHealth();
     fetchTasks();
+    fetchModels();
     const interval = setInterval(checkHealth, 15000);
     return () => clearInterval(interval);
   }, []);
@@ -121,7 +143,7 @@ export default function App() {
       const res = await fetch(`${API_BASE_URL}/ai/autofill`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: aiPrompt })
+        body: JSON.stringify({ prompt: aiPrompt, model: selectedModel })
       });
       const json = await res.json();
       if (json.success && json.data) {
@@ -151,7 +173,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: task.title,
-          description: task.description
+          description: task.description,
+          model: selectedModel
         })
       });
       const json = await res.json();
@@ -216,7 +239,7 @@ export default function App() {
       const res = await fetch(`${API_BASE_URL}/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages })
+        body: JSON.stringify({ messages: newMessages, model: selectedModel })
       });
       const json = await res.json();
       if (json.success && json.reply) {
@@ -308,8 +331,8 @@ export default function App() {
                 {APP_ENV}
               </span>
               {serverHealth?.nvidiaApiConfigured && (
-                <span className="ai-badge" id="badge-nvidia-ai" title="NVIDIA NIM Llama 3.2 Connected">
-                  ⚡ NVIDIA Llama 3.2
+                <span className="ai-badge" id="badge-nvidia-ai" title={`Active Model: ${selectedModel}`}>
+                  ⚡ {availableModels.find((m) => m.id === selectedModel)?.name || 'NVIDIA NIM'}
                 </span>
               )}
             </div>
@@ -641,7 +664,7 @@ export default function App() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.84rem' }}>
                 <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#38bdf8' }}></span>
-                <strong>AI Engine:</strong> NVIDIA NIM (Meta Llama 3.2)
+                <strong>AI Engine:</strong> NVIDIA NIM ({availableModels.find((m) => m.id === selectedModel)?.name || 'Active'})
               </div>
             </div>
           </div>
@@ -771,11 +794,34 @@ export default function App() {
         <div className="modal-backdrop" id="modal-copilot" onClick={() => setIsCopilotOpen(false)}>
           <div className="modal-card copilot-panel" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <div className="modal-title">
+              <div className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                 <span>🤖 Nexus AI Copilot</span>
-                <span className="ai-badge" style={{ fontSize: '0.68rem', padding: '0.15rem 0.5rem' }}>
-                  Llama 3.2
-                </span>
+                {availableModels.length > 0 && (
+                  <select
+                    id="select-ai-model"
+                    className="model-select-dropdown"
+                    value={selectedModel}
+                    onChange={(e) => {
+                      const newModel = e.target.value;
+                      setSelectedModel(newModel);
+                      const modelObj = availableModels.find((m) => m.id === newModel);
+                      showToast(`AI Model set to: ${modelObj?.name || newModel}`);
+                    }}
+                    title="Select AI Model"
+                  >
+                    {Array.from(new Set(availableModels.map((m) => m.provider))).map((providerName) => (
+                      <optgroup key={providerName} label={providerName}>
+                        {availableModels
+                          .filter((m) => m.provider === providerName)
+                          .map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name} ({m.badge})
+                            </option>
+                          ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                )}
               </div>
               <button
                 id="btn-close-copilot-modal"

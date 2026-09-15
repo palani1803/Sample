@@ -879,3 +879,32 @@ body {
   from { transform: scale(0.95); opacity: 0; }
   to { transform: scale(1); opacity: 1; }
 }
+
+/* AI Model Selector */
+.model-select-dropdown {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  border-radius: var(--radius-full);
+  color: var(--accent-light);
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 0.3rem 0.8rem;
+  outline: none;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.model-select-dropdown:hover {
+  border-color: var(--accent-primary);
+  background: rgba(30, 41, 59, 0.95);
+}
+
+.model-select-dropdown:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.3);
+}
+
+.model-select-dropdown option {
+  background: #0f172a;
+  color: #f8fafc;
+}

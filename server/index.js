@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { generateTaskBreakdown, autofillTask, chatCopilot } from './aiService.js';
+import { generateTaskBreakdown, autofillTask, chatCopilot, SUPPORTED_MODELS } from './aiService.js';
 
 dotenv.config();
 
@@ -76,6 +76,7 @@ app.get('/api/health', (req, res) => {
     uptimeSeconds: Math.floor(process.uptime()),
     environment: NODE_ENV,
     nvidiaApiConfigured: Boolean(NVIDIA_API_KEY),
+    nvidiaModel: process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct',
     nodeVersion: process.version,
     platform: process.platform,
     memoryUsage: {
@@ -184,15 +185,24 @@ app.delete('/api/tasks/:id', (req, res) => {
 
 // --- NVIDIA AI ENDPOINTS ---
 
+// AI Models Catalog
+app.get('/api/ai/models', (req, res) => {
+  res.json({
+    success: true,
+    defaultModel: process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct',
+    models: SUPPORTED_MODELS
+  });
+});
+
 // AI Task Breakdown
 app.post('/api/ai/breakdown', async (req, res) => {
-  const { title, description = '' } = req.body;
+  const { title, description = '', model } = req.body;
   if (!title) {
     return res.status(400).json({ success: false, error: 'Task title is required' });
   }
 
   try {
-    const breakdown = await generateTaskBreakdown(title, description);
+    const breakdown = await generateTaskBreakdown(title, description, { model });
     res.json({ success: true, data: breakdown });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -201,13 +211,13 @@ app.post('/api/ai/breakdown', async (req, res) => {
 
 // AI Autofill from prompt
 app.post('/api/ai/autofill', async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, model } = req.body;
   if (!prompt) {
     return res.status(400).json({ success: false, error: 'Prompt is required' });
   }
 
   try {
-    const autofillData = await autofillTask(prompt);
+    const autofillData = await autofillTask(prompt, { model });
     res.json({ success: true, data: autofillData });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -216,14 +226,18 @@ app.post('/api/ai/autofill', async (req, res) => {
 
 // AI Copilot Chat
 app.post('/api/ai/chat', async (req, res) => {
-  const { messages = [] } = req.body;
+  const { messages = [], model } = req.body;
   if (!messages.length) {
     return res.status(400).json({ success: false, error: 'Messages array is required' });
   }
 
   try {
-    const reply = await chatCopilot(messages);
-    res.json({ success: true, reply });
+    const reply = await chatCopilot(messages, { model });
+    res.json({
+      success: true,
+      reply,
+      model: model || process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct'
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
