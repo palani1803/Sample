@@ -1,15 +1,32 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { generateTaskBreakdown, autofillTask, chatCopilot, SUPPORTED_MODELS } from './aiService.js';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { 
+  generateTaskBreakdown, 
+  autofillTask, 
+  chatCopilot, 
+  SUPPORTED_MODELS, 
+  SUPPORTED_IMAGE_MODELS, 
+  generateImageService 
+} from './aiService.js';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const DEFAULT_MODEL = process.env.DEFAULT_MODEL || (GROQ_API_KEY ? 'groq/llama-3.3-70b-versatile' : (process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct'));
 
 // Middleware
 app.use(cors({
@@ -75,8 +92,10 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
     environment: NODE_ENV,
+    groqApiConfigured: Boolean(GROQ_API_KEY),
     nvidiaApiConfigured: Boolean(NVIDIA_API_KEY),
-    nvidiaModel: process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct',
+    openrouterApiConfigured: Boolean(OPENROUTER_API_KEY),
+    activeModel: DEFAULT_MODEL,
     nodeVersion: process.version,
     platform: process.platform,
     memoryUsage: {
@@ -189,7 +208,7 @@ app.delete('/api/tasks/:id', (req, res) => {
 app.get('/api/ai/models', (req, res) => {
   res.json({
     success: true,
-    defaultModel: process.env.NVIDIA_MODEL || 'meta/llama-3.2-11b-vision-instruct',
+    defaultModel: DEFAULT_MODEL,
     models: SUPPORTED_MODELS
   });
 });
@@ -243,6 +262,88 @@ app.post('/api/ai/chat', async (req, res) => {
   }
 });
 
+// Apply AI generated code directly to project files
+app.post('/api/ai/apply-code', async (req, res) => {
+  const { filePath, code } = req.body;
+
+  if (!filePath || typeof filePath !== 'string') {
+    return res.status(400).json({ success: false, error: 'Target filePath is required' });
+  }
+
+  if (typeof code !== 'string') {
+    return res.status(400).json({ success: false, error: 'Code content is required' });
+  }
+
+  // Sanitize path to prevent directory traversal
+  const sanitizedRelPath = filePath.trim().replace(/^(\.\.[\/\\])+/, '');
+  const absoluteTarget = path.resolve(PROJECT_ROOT, sanitizedRelPath);
+
+  if (!absoluteTarget.startsWith(PROJECT_ROOT)) {
+    return res.status(403).json({ success: false, error: 'Path outside project root is not permitted' });
+  }
+
+  if (sanitizedRelPath.includes('.git') || sanitizedRelPath.includes('node_modules')) {
+    return res.status(403).json({ success: false, error: 'Modifying .git or node_modules is not permitted' });
+  }
+
+  try {
+    await fs.mkdir(path.dirname(absoluteTarget), { recursive: true });
+    await fs.writeFile(absoluteTarget, code, 'utf-8');
+
+    console.log(`[AI Bridge] Successfully wrote ${code.length} bytes to ${sanitizedRelPath}`);
+    res.json({
+      success: true,
+      message: `File "${sanitizedRelPath}" written to project!`,
+      filePath: sanitizedRelPath,
+      bytesWritten: code.length
+    });
+  } catch (err) {
+    console.error('[AI Bridge] Error writing file:', err);
+    res.status(500).json({ success: false, error: `Failed to write file: ${err.message}` });
+  }
+});
+
+// --- AI IMAGE GENERATION (FLUX & SDXL) ---
+
+// Get supported image diffusion models
+app.get('/api/ai/image-models', (req, res) => {
+  res.json({
+    success: true,
+    defaultModel: 'flux-realism',
+    models: SUPPORTED_IMAGE_MODELS
+  });
+});
+
+// Generate image from prompt
+app.post('/api/ai/generate-image', async (req, res) => {
+  const { prompt, model, width, height, enhance, style, seed } = req.body;
+
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+    return res.status(400).json({ success: false, error: 'Prompt is required' });
+  }
+
+  try {
+    const imageData = await generateImageService({
+      prompt,
+      model,
+      width,
+      height,
+      enhance,
+      style,
+      seed
+    });
+
+    console.log(`[AI Image Studio] Generated image for prompt: "${prompt.slice(0, 50)}..." with model ${imageData.model}`);
+    res.json({
+      success: true,
+      data: imageData
+    });
+  } catch (err) {
+    console.error('[AI Image Studio] Error generating image:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // 404 Handler
 app.use('/api/*', (req, res) => {
   res.status(404).json({
@@ -252,8 +353,26 @@ app.use('/api/*', (req, res) => {
 });
 
 // Start Server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Node.js Express server running at http://localhost:${PORT}`);
   console.log(`📡 Health check available at http://localhost:${PORT}/api/health`);
   console.log(`🤖 NVIDIA API Key: ${NVIDIA_API_KEY ? 'Configured (nvapi-***)' : 'Not configured'}`);
 });
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ [PORT CONFLICT] Port ${PORT} is already in use by another process.`);
+    console.error(`💡 Tip: Another Node process is already running. If you ran 'npm run dev' in root, it already starts both backend and frontend together.\n`);
+    process.exit(1);
+  } else {
+    console.error('Server error:', err);
+  }
+});
+
+process.on('SIGINT', () => {
+  server.close(() => {
+    console.log('\n🛑 Server closed gracefully');
+    process.exit(0);
+  });
+});
+

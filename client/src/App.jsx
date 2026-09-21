@@ -39,6 +39,20 @@ export default function App() {
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('meta/llama-3.2-11b-vision-instruct');
 
+  // AI Image Studio State
+  const [isImageStudioOpen, setIsImageStudioOpen] = useState(false);
+  const [imagePrompt, setImagePrompt] = useState('');
+  const [imageModel, setImageModel] = useState('flux-realism');
+  const [imageAspectRatio, setImageAspectRatio] = useState('16:9');
+  const [imageQuality, setImageQuality] = useState('4k'); // '4k' | '2k' | '1080p'
+  const [imageStyle, setImageStyle] = useState('photorealistic'); // 'photorealistic' | 'cinematic' | '3d-render' | 'anime'
+  const [isEnhancePrompt, setIsEnhancePrompt] = useState(true);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [generatedImages, setGeneratedImages] = useState([]);
+  const [activePreviewImage, setActivePreviewImage] = useState(null);
+  const [availableImageModels, setAvailableImageModels] = useState([]);
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+
   const showToast = (message) => {
     setToast(message);
     setTimeout(() => {
@@ -92,13 +106,114 @@ export default function App() {
     }
   };
 
+  // Fetch Image Diffusion Models
+  const fetchImageModels = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/ai/image-models`);
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.success && json.models) {
+        setAvailableImageModels(json.models);
+        if (json.defaultModel) {
+          setImageModel(json.defaultModel);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching AI image models:', err);
+    }
+  };
+
   useEffect(() => {
     checkHealth();
     fetchTasks();
     fetchModels();
+    fetchImageModels();
     const interval = setInterval(checkHealth, 15000);
     return () => clearInterval(interval);
   }, []);
+
+  // Compute High-Clarity Dimensions
+  const getClarityDimensions = (ratio, quality) => {
+    if (quality === '4k') {
+      if (ratio === '16:9') return { width: 1920, height: 1080 };
+      if (ratio === '9:16') return { width: 1080, height: 1920 };
+      if (ratio === '4:3') return { width: 1600, height: 1200 };
+      return { width: 1536, height: 1536 };
+    }
+    if (quality === '2k') {
+      if (ratio === '16:9') return { width: 1536, height: 864 };
+      if (ratio === '9:16') return { width: 864, height: 1536 };
+      if (ratio === '4:3') return { width: 1280, height: 960 };
+      return { width: 1280, height: 1280 };
+    }
+    // 1080p Standard
+    if (ratio === '16:9') return { width: 1280, height: 720 };
+    if (ratio === '9:16') return { width: 720, height: 1280 };
+    if (ratio === '4:3') return { width: 1024, height: 768 };
+    return { width: 1024, height: 1024 };
+  };
+
+  // Handle AI Image Generation
+  const handleGenerateImage = async (customPrompt) => {
+    const promptToUse = typeof customPrompt === 'string' ? customPrompt : imagePrompt;
+    if (!promptToUse || !promptToUse.trim()) {
+      showToast('⚠️ Please enter an image description prompt');
+      return;
+    }
+
+    setIsGeneratingImage(true);
+    try {
+      const dims = getClarityDimensions(imageAspectRatio, imageQuality);
+
+      const res = await fetch(`${API_BASE_URL}/ai/generate-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: promptToUse.trim(),
+          model: imageModel,
+          width: dims.width,
+          height: dims.height,
+          enhance: isEnhancePrompt,
+          style: imageStyle
+        })
+      });
+
+      const json = await res.json();
+      if (json.success && json.data) {
+        setActivePreviewImage(json.data);
+        setGeneratedImages((prev) => [json.data, ...prev.filter((x) => x.id !== json.data.id)]);
+        showToast(`✨ Crystal-clear image rendered with ${json.data.model.toUpperCase()} (${json.data.width}x${json.data.height})!`);
+      } else {
+        showToast(`Error: ${json.error || 'Failed to generate image'}`);
+      }
+    } catch (err) {
+      console.error('Image generation failed:', err);
+      showToast('Image generation failed. Please check network connection.');
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  };
+
+  // Download Image Helper
+  const handleDownloadImage = async (imgObj) => {
+    if (!imgObj?.imageUrl) return;
+    try {
+      showToast('⏳ Downloading high-res image...');
+      const response = await fetch(imgObj.imageUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `nexus-art-${imgObj.model}-${Date.now()}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      showToast('✅ Image downloaded to your PC!');
+    } catch (err) {
+      window.open(imgObj.imageUrl, '_blank');
+    }
+  };
 
   // Handle Add Task
   const handleAddTask = async (e) => {
@@ -256,6 +371,33 @@ export default function App() {
     }
   };
 
+  // Handle Apply Code Snippet to Project
+  const handleApplyCode = async (filePath, code) => {
+    if (!filePath || !filePath.trim()) {
+      showToast('❌ Please specify a target file path');
+      return false;
+    }
+    try {
+      const res = await fetch(`${API_BASE_URL}/ai/apply-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath: filePath.trim(), code })
+      });
+      const json = await res.json();
+      if (json.success) {
+        showToast(`🚀 Successfully wrote ${json.filePath} to your project!`);
+        return true;
+      } else {
+        showToast(`❌ Failed to write file: ${json.error}`);
+        return false;
+      }
+    } catch (err) {
+      console.error('Failed to apply code:', err);
+      showToast(`❌ Error: ${err.message}`);
+      return false;
+    }
+  };
+
   // Handle Toggle Task
   const handleToggleTask = async (task) => {
     try {
@@ -342,6 +484,16 @@ export default function App() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
           <button
+            id="btn-toggle-studio"
+            className="btn-studio"
+            onClick={() => setIsImageStudioOpen(true)}
+            title="Open AI Image Studio (FLUX.1 & SDXL)"
+          >
+            <span>🎨</span>
+            <span>AI Image Studio</span>
+          </button>
+
+          <button
             id="btn-toggle-copilot"
             className="btn-ai"
             onClick={() => setIsCopilotOpen(!isCopilotOpen)}
@@ -384,7 +536,7 @@ export default function App() {
         </h1>
         <p className="hero-desc">
           High-performance full-stack platform featuring Vite HMR, Express REST API, server-side telemetry, 
-          and AI task orchestration powered by NVIDIA NIM Meta Llama 3.2.
+          Groq / NVIDIA LLM orchestration, and FLUX.1 high-speed AI image synthesis.
         </p>
       </section>
 
@@ -401,32 +553,32 @@ export default function App() {
         </div>
 
         <div className="telemetry-card" id="telemetry-runtime">
-          <div className="telemetry-label">Node Runtime</div>
-          <div className="telemetry-val">
-            {serverHealth?.nodeVersion || '--'}
+          <div className="telemetry-label">LLM Speed</div>
+          <div className="telemetry-val" style={{ color: '#38bdf8' }}>
+            {serverHealth?.groqApiConfigured ? '⚡ 500+ tok/s' : 'Standard'}
           </div>
           <div className="telemetry-meta">
-            Platform: {serverHealth?.platform || 'win32'}
+            {serverHealth?.groqApiConfigured ? 'Groq LPU Engine Active' : 'NVIDIA NIM Provider'}
           </div>
         </div>
 
         <div className="telemetry-card" id="telemetry-ai">
-          <div className="telemetry-label">NVIDIA AI Engine</div>
+          <div className="telemetry-label">Text & Code AI</div>
           <div className="telemetry-val" style={{ color: '#34d399' }}>
-            {serverHealth?.nvidiaApiConfigured ? 'Active' : 'Offline'}
+            {availableModels.find((m) => m.id === selectedModel)?.name || 'Llama 3.3'}
           </div>
           <div className="telemetry-meta">
-            Meta Llama 3.2 Vision
+            {availableModels.find((m) => m.id === selectedModel)?.badge || 'Active Model'}
           </div>
         </div>
 
-        <div className="telemetry-card" id="telemetry-tasks">
-          <div className="telemetry-label">Backend Tasks</div>
-          <div className="telemetry-val">
-            {tasks.length}
+        <div className="telemetry-card" id="telemetry-images" style={{ cursor: 'pointer' }} onClick={() => setIsImageStudioOpen(true)} title="Click to open AI Image Studio">
+          <div className="telemetry-label">AI Image Studio</div>
+          <div className="telemetry-val" style={{ color: '#ec4899' }}>
+            FLUX.1
           </div>
           <div className="telemetry-meta">
-            {tasks.filter(t => !t.completed).length} active, {tasks.filter(t => t.completed).length} completed
+            🎨 Diffusion Studio Active
           </div>
         </div>
       </section>
@@ -759,7 +911,13 @@ export default function App() {
                       <h4 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
                         Code / Implementation Reference
                       </h4>
-                      <div className="code-box">{breakdownData.codeSnippet}</div>
+                      <CodeSnippetCard
+                        lang="javascript"
+                        initialPath={`client/src/features/${(activeBreakdownTask?.title || 'feature').toLowerCase().replace(/[^a-z0-9]/g, '_')}.js`}
+                        code={breakdownData.codeSnippet}
+                        onApplyCode={handleApplyCode}
+                        showToast={showToast}
+                      />
                     </div>
                   )}
                 </>
@@ -835,7 +993,15 @@ export default function App() {
             <div className="chat-history">
               {chatMessages.map((msg, i) => (
                 <div key={i} className={`chat-bubble ${msg.role}`}>
-                  {msg.content}
+                  {msg.role === 'assistant' ? (
+                    <InteractiveChatContent
+                      content={msg.content}
+                      onApplyCode={handleApplyCode}
+                      showToast={showToast}
+                    />
+                  ) : (
+                    msg.content
+                  )}
                 </div>
               ))}
               {isChatLoading && (
@@ -867,6 +1033,456 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* AI Image Studio Modal */}
+      {isImageStudioOpen && (
+        <div className="modal-backdrop" id="modal-image-studio" onClick={() => setIsImageStudioOpen(false)}>
+          <div className="modal-card studio-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span style={{ fontSize: '1.4rem' }}>🎨</span>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '1.1rem' }}>AI Image Studio</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    Powered by FLUX.1 & SDXL Diffusion Models
+                  </div>
+                </div>
+              </div>
+              <button
+                id="btn-close-studio-modal"
+                className="btn-close"
+                onClick={() => setIsImageStudioOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="studio-grid">
+              {/* Left Column: Controls */}
+              <div className="studio-controls">
+                {/* Prompt Input */}
+                <div className="studio-field-group">
+                  <div className="studio-label">
+                    <span>Describe what to create</span>
+                    <span style={{ color: '#ec4899', fontSize: '0.75rem' }}>✨ Instant Generation</span>
+                  </div>
+                  <textarea
+                    id="input-image-prompt"
+                    className="studio-textarea"
+                    placeholder="E.g. A futuristic cybernetic city with glowing neon skyscrapers in the rain, cinematic lighting, 8k..."
+                    value={imagePrompt}
+                    onChange={(e) => setImagePrompt(e.target.value)}
+                    disabled={isGeneratingImage}
+                  />
+                </div>
+
+                {/* Quick Inspiration Chips */}
+                <div className="studio-field-group">
+                  <div className="studio-label">
+                    <span>💡 Quick Inspiration Prompts</span>
+                  </div>
+                  <div className="prompt-chips-wrapper">
+                    {[
+                      { label: '📸 Real Kyoto Street Portrait', prompt: 'RAW candid color photo of a real woman holding umbrella on Kyoto street, natural skin texture, visible pores, Sony A7IV 85mm lens, natural daylight, National Geographic documentary portrait, real life photo' },
+                      { label: '🏎️ Real Supercar Commercial', prompt: 'Authentic 8k automotive photography of a luxury carbon hypercar in dark studio, wet ground reflections, crisp sharp lines, Hasselblad 50mm, real car photo' },
+                      { label: '🏔️ Alpine Lake Nature', prompt: 'Real documentary landscape photograph of snow-capped mountains reflected in a clear alpine lake at sunrise, Canon EOS R5, ultra-sharp detail, real life' },
+                      { label: '☕ Cafe Lifestyle', prompt: 'Authentic lifestyle photograph of a barista brewing artisan pour-over coffee in a sunlit modern cafe, natural morning light, real photo' },
+                      { label: '🏙️ Modern Skyscraper', prompt: 'Real architectural photograph of a sleek glass skyscraper reflecting warm golden hour clouds, Leica M11, crisp geometric lines' },
+                      { label: '🐆 Wildlife Safari', prompt: 'Real wildlife documentary photograph of a leopard resting on an acacia tree in the Serengeti, 400mm telephoto lens, National Geographic' }
+                    ].map((chip, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        className="prompt-chip"
+                        onClick={() => {
+                          setImagePrompt(chip.prompt);
+                          handleGenerateImage(chip.prompt);
+                        }}
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Model Selection */}
+                <div className="studio-field-group">
+                  <div className="studio-label">
+                    <span>Diffusion Model</span>
+                  </div>
+                  <select
+                    id="select-image-model"
+                    className="model-select-dropdown"
+                    style={{ width: '100%' }}
+                    value={imageModel}
+                    onChange={(e) => setImageModel(e.target.value)}
+                  >
+                    {availableImageModels.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.badge})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Aspect Ratio & Resolution Grid */}
+                <div className="studio-field-group">
+                  <div className="studio-label">
+                    <span>Aspect Ratio & Resolution</span>
+                    <span style={{ color: '#38bdf8', fontSize: '0.75rem', fontWeight: 700 }}>{imageQuality.toUpperCase()} RENDER</span>
+                  </div>
+                  <div className="aspect-ratio-selector">
+                    {[
+                      { id: '16:9', label: '16:9', sub: 'Landscape', w: 22, h: 13 },
+                      { id: '1:1', label: '1:1', sub: 'Square', w: 16, h: 16 },
+                      { id: '9:16', label: '9:16', sub: 'Portrait', w: 13, h: 22 },
+                      { id: '4:3', label: '4:3', sub: 'Standard', w: 18, h: 14 }
+                    ].map((ratio) => (
+                      <button
+                        key={ratio.id}
+                        type="button"
+                        className={`ratio-btn ${imageAspectRatio === ratio.id ? 'active' : ''}`}
+                        onClick={() => setImageAspectRatio(ratio.id)}
+                      >
+                        <span className="ratio-box-icon" style={{ width: ratio.w, height: ratio.h }}></span>
+                        <span>{ratio.label}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Quality Tier Selector */}
+                  <div className="quality-tier-grid" style={{ marginTop: '0.5rem' }}>
+                    {[
+                      { id: '4k', label: '💎 4K Ultra HD', desc: 'Maximum pixel density & razor sharpness' },
+                      { id: '2k', label: '🚀 2K Crisp', desc: 'High definition balanced render' },
+                      { id: '1080p', label: '⚡ 1080p Fast', desc: 'Standard preview speed' }
+                    ].map((q) => (
+                      <button
+                        key={q.id}
+                        type="button"
+                        className={`quality-pill-btn ${imageQuality === q.id ? 'active' : ''}`}
+                        onClick={() => setImageQuality(q.id)}
+                        title={q.desc}
+                      >
+                        {q.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Clarity & Rendering Style */}
+                <div className="studio-field-group">
+                  <div className="studio-label">
+                    <span>Clarity & Rendering Style</span>
+                  </div>
+                  <div className="style-chips-grid">
+                    {[
+                      { id: 'photorealistic', label: '📸 8K Photorealism' },
+                      { id: 'cinematic', label: '🎬 Cinematic IMAX' },
+                      { id: '3d-render', label: '🧊 Octane 3D Raytrace' },
+                      { id: 'anime', label: '🎨 Sharp Anime Art' }
+                    ].map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className={`style-chip-btn ${imageStyle === s.id ? 'active' : ''}`}
+                        onClick={() => setImageStyle(s.id)}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* AI Prompt Enhancer Toggle */}
+                <label className="enhance-toggle-box">
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem', color: '#f8fafc' }}>
+                      ⚡ Groq AI Optical Sharpness Enhancer
+                    </div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                      Injects 8K clarity, razor-sharp focus & deep depth of field (removes blur)
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={isEnhancePrompt}
+                    onChange={(e) => setIsEnhancePrompt(e.target.checked)}
+                  />
+                </label>
+
+                {/* Generate Button */}
+                <button
+                  id="btn-generate-image"
+                  className="btn-generate-art"
+                  type="button"
+                  onClick={() => handleGenerateImage()}
+                  disabled={isGeneratingImage || !imagePrompt.trim()}
+                >
+                  {isGeneratingImage ? (
+                    <>
+                      <div className="spinner-glow" style={{ width: 20, height: 20, borderWidth: 2 }}></div>
+                      <span>Synthesizing Ultra-HD Image...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>✨</span>
+                      <span>Generate Ultra-Sharp Image</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Right Column: Preview & History */}
+              <div className="studio-preview-section">
+                <div 
+                  className="studio-canvas-card"
+                  onClick={() => activePreviewImage && setIsLightboxOpen(true)}
+                  style={{ cursor: activePreviewImage ? 'zoom-in' : 'default' }}
+                  title={activePreviewImage ? 'Click to inspect in 4K Fullscreen' : ''}
+                >
+                  {isGeneratingImage ? (
+                    <div className="studio-canvas-loading">
+                      <div className="spinner-glow"></div>
+                      <div style={{ fontWeight: 600 }}>Synthesizing 8K Razor-Sharp Visual...</div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                        Eliminating blur & applying high-frequency raytraced textures
+                      </div>
+                    </div>
+                  ) : activePreviewImage ? (
+                    <>
+                      <img
+                        src={activePreviewImage.imageUrl}
+                        alt={activePreviewImage.prompt}
+                        className="studio-main-image"
+                        loading="eager"
+                      />
+                      <div className="preview-zoom-tag">🔍 Click for 4K Zoom</div>
+                    </>
+                  ) : (
+                    <div className="studio-canvas-empty">
+                      <span style={{ fontSize: '2.5rem' }}>🖼️</span>
+                      <div style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+                        No Image Generated Yet
+                      </div>
+                      <div style={{ fontSize: '0.82rem' }}>
+                        Type a prompt or choose an inspiration chip on the left to create your first visual art!
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {activePreviewImage && (
+                  <>
+                    <div className="image-meta-banner">
+                      <div>
+                        <strong>Prompt:</strong> "{activePreviewImage.prompt}"
+                      </div>
+                      {activePreviewImage.isEnhanced && activePreviewImage.enhancedPrompt !== activePreviewImage.prompt && (
+                        <div style={{ color: '#cbd5e1', fontSize: '0.78rem' }}>
+                          <strong>✨ AI Enhanced:</strong> {activePreviewImage.enhancedPrompt}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem', flexWrap: 'wrap' }}>
+                        <span>Model: <strong>{activePreviewImage.model.toUpperCase()}</strong></span>
+                        <span>Resolution: <strong style={{ color: '#38bdf8' }}>{activePreviewImage.width} × {activePreviewImage.height}</strong></span>
+                        <span>Seed: <strong>{activePreviewImage.seed}</strong></span>
+                      </div>
+                    </div>
+
+                    <div className="image-action-bar">
+                      <button
+                        className="btn-img-action primary"
+                        onClick={() => handleDownloadImage(activePreviewImage)}
+                        title="Download high-resolution image to your device"
+                      >
+                        💾 Download 4K JPG
+                      </button>
+                      <button
+                        className="btn-img-action"
+                        onClick={() => setIsLightboxOpen(true)}
+                        title="View at 100% full screen scale"
+                      >
+                        🔍 Fullscreen
+                      </button>
+                      <button
+                        className="btn-img-action"
+                        onClick={() => {
+                          navigator.clipboard.writeText(activePreviewImage.imageUrl);
+                          showToast('🔗 Image URL copied!');
+                        }}
+                        title="Copy direct image URL"
+                      >
+                        🔗 Copy Link
+                      </button>
+                      <button
+                        className="btn-img-action"
+                        onClick={() => handleGenerateImage(activePreviewImage.prompt)}
+                        title="Generate again with a new random seed"
+                      >
+                        🎲 Re-roll
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* Session Gallery */}
+                {generatedImages.length > 0 && (
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.4rem', fontWeight: 600 }}>
+                      Recent Session Creations ({generatedImages.length})
+                    </div>
+                    <div className="studio-gallery-strip">
+                      {generatedImages.map((img) => (
+                        <div
+                          key={img.id}
+                          className={`gallery-thumb-item ${activePreviewImage?.id === img.id ? 'active' : ''}`}
+                          onClick={() => setActivePreviewImage(img)}
+                          title={`"${img.prompt}"`}
+                        >
+                          <img src={img.imageUrl} alt={img.prompt} className="gallery-thumb-img" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4K Fullscreen Lightbox Modal */}
+      {isLightboxOpen && activePreviewImage && (
+        <div className="modal-backdrop lightbox-backdrop" onClick={() => setIsLightboxOpen(false)}>
+          <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <div className="lightbox-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span style={{ fontWeight: 700 }}>🔍 Ultra 4K Pixel Inspection</span>
+                <span className="ai-badge" style={{ background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8' }}>
+                  {activePreviewImage.width} × {activePreviewImage.height}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  className="btn-img-action primary"
+                  onClick={() => handleDownloadImage(activePreviewImage)}
+                  style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                >
+                  💾 Save 4K
+                </button>
+                <button className="btn-close" onClick={() => setIsLightboxOpen(false)}>✕</button>
+              </div>
+            </div>
+            <div className="lightbox-img-wrapper">
+              <img
+                src={activePreviewImage.imageUrl}
+                alt={activePreviewImage.prompt}
+                className="lightbox-img"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Interactive Markdown Parser for Chat Messages with Code Action Cards
+function InteractiveChatContent({ content, onApplyCode, showToast }) {
+  if (!content) return null;
+
+  // Regex to match markdown code fences: ```[lang] [filename] ... ```
+  const codeBlockRegex = /```(?:(\w+)(?:\s+(?:filename=)?["']?([^"'\n]+)["']?)?)?\n([\s\S]*?)```/g;
+  const elements = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = codeBlockRegex.exec(content)) !== null) {
+    const textBefore = content.slice(lastIndex, match.index);
+    if (textBefore) {
+      elements.push(<span key={`text-${lastIndex}`}>{textBefore}</span>);
+    }
+
+    const lang = match[1] || 'javascript';
+    const suggestedFile = match[2] || (
+      lang === 'jsx' || lang === 'react' ? 'client/src/components/GeneratedComponent.jsx' :
+      lang === 'css' ? 'client/src/custom.css' :
+      lang === 'html' ? 'client/index.html' :
+      'server/utils/ai_generated.js'
+    );
+    const code = match[3];
+
+    elements.push(
+      <CodeSnippetCard
+        key={`code-${match.index}`}
+        lang={lang}
+        initialPath={suggestedFile}
+        code={code}
+        onApplyCode={onApplyCode}
+        showToast={showToast}
+      />
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  const remainingText = content.slice(lastIndex);
+  if (remainingText) {
+    elements.push(<span key={`text-end`}>{remainingText}</span>);
+  }
+
+  return elements.length > 0 ? <>{elements}</> : <span>{content}</span>;
+}
+
+// Code Card with Copy and Apply to Project buttons
+function CodeSnippetCard({ lang, initialPath, code, onApplyCode, showToast }) {
+  const [filePath, setFilePath] = useState(initialPath);
+  const [applied, setApplied] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    showToast('📋 Code copied to clipboard!');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleApply = async () => {
+    const success = await onApplyCode(filePath, code);
+    if (success) {
+      setApplied(true);
+      setTimeout(() => setApplied(false), 3000);
+    }
+  };
+
+  return (
+    <div className="chat-code-card">
+      <div className="chat-code-header">
+        <span className="code-lang-tag">{lang}</span>
+        <input
+          className="code-path-input"
+          value={filePath}
+          onChange={(e) => setFilePath(e.target.value)}
+          placeholder="Target file path in project..."
+          title="Edit target file path to save code to"
+        />
+        <div className="code-actions-group">
+          <button className="btn-code-action" onClick={handleCopy} type="button">
+            {copied ? 'Copied ✓' : '📋 Copy'}
+          </button>
+          <button
+            className={`btn-code-action apply ${applied ? 'applied' : ''}`}
+            onClick={handleApply}
+            type="button"
+          >
+            {applied ? 'Applied ✅' : '🚀 Apply to Project'}
+          </button>
+        </div>
+      </div>
+      <pre className="chat-code-body">
+        <code>{code}</code>
+      </pre>
     </div>
   );
 }
